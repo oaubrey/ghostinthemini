@@ -12,7 +12,9 @@ license = { text = "MIT" }
 authors = [
     { name = "Your Name", email = "you@example.com" }
 ]
-dependencies = []
+dependencies = [
+    "ollama",
+]
 
 [project.optional-dependencies]
 dev = [
