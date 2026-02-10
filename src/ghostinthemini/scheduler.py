@@ -11,23 +11,29 @@ from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_ollama import ChatOllama
 
-# Full read/write access to Google Calendar
-SCOPES = ["https://www.googleapis.com/auth/calendar"]
+from ghostinthemini.config import (
+    CREDENTIALS_PATH,
+    MODEL,
+    SCOPES,
+    TIMEZONE,
+    TIMEZONE_NAME,
+    TOKEN_PATH,
+)
 
-# Credential paths (stored at project root, outside of src/)
-_PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-CREDENTIALS_PATH = os.path.join(_PROJECT_ROOT, "credentials.json")
-TOKEN_PATH = os.path.join(_PROJECT_ROOT, "token.json")
 
-# Model used by the Ghost
-MODEL = "qwen3-coder:30b-a3b-q4_K_M"
+# ---------------------------------------------------------------------------
+# Exceptions
+# ---------------------------------------------------------------------------
+
+class SchedulingError(Exception):
+    """Raised when the scheduling pipeline fails."""
 
 
 # ---------------------------------------------------------------------------
 # Google Calendar helpers
 # ---------------------------------------------------------------------------
 
-def _get_calendar_service():
+def get_calendar_service():
     """Authenticate with Google and return a Calendar API service object.
 
     On first run this opens a browser for OAuth consent.  After that,
@@ -65,9 +71,9 @@ def get_schedule(days_ahead: int = 7) -> list[dict]:
 
     Returns a list of dicts with keys: summary, start, end, description.
     """
-    service = _get_calendar_service()
+    service = get_calendar_service()
 
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = datetime.datetime.now(TIMEZONE)
     time_min = now.isoformat()
     time_max = (now + datetime.timedelta(days=days_ahead)).isoformat()
 
@@ -101,22 +107,19 @@ def get_schedule(days_ahead: int = 7) -> list[dict]:
     return schedule
 
 
-def _create_event(summary: str, start: str, end: str, description: str = "") -> dict:
+def create_event(summary: str, start: str, end: str, description: str = "") -> dict:
     """Create a new event on the primary Google Calendar.
 
     *start* and *end* should be ISO-8601 datetime strings.
     Returns the created event resource from the API.
     """
-    service = _get_calendar_service()
-
-    # Detect local timezone from the system
-    local_tz = datetime.datetime.now(datetime.timezone.utc).astimezone().tzname()
+    service = get_calendar_service()
 
     event_body = {
         "summary": summary,
         "description": description,
-        "start": {"dateTime": start, "timeZone": local_tz},
-        "end": {"dateTime": end, "timeZone": local_tz},
+        "start": {"dateTime": start, "timeZone": TIMEZONE_NAME},
+        "end": {"dateTime": end, "timeZone": TIMEZONE_NAME},
     }
 
     created = (
@@ -125,6 +128,40 @@ def _create_event(summary: str, start: str, end: str, description: str = "") -> 
         .execute()
     )
     return created
+
+
+# ---------------------------------------------------------------------------
+# LLM result validation
+# ---------------------------------------------------------------------------
+
+REQUIRED_KEYS = {"summary", "start", "end"}
+
+
+def validate_llm_result(result: dict) -> None:
+    """Raise SchedulingError if the LLM result is missing keys or has bad datetimes."""
+    missing = REQUIRED_KEYS - result.keys()
+    if missing:
+        raise SchedulingError(
+            f"LLM response missing required key(s): {', '.join(sorted(missing))}. "
+            f"Got: {result}"
+        )
+
+    for key in ("start", "end"):
+        value = result[key]
+        try:
+            datetime.datetime.fromisoformat(value)
+        except (ValueError, TypeError) as exc:
+            raise SchedulingError(
+                f"LLM returned an invalid datetime for '{key}': {value!r}"
+            ) from exc
+
+    start_dt = datetime.datetime.fromisoformat(result["start"])
+    end_dt = datetime.datetime.fromisoformat(result["end"])
+    if end_dt <= start_dt:
+        raise SchedulingError(
+            f"LLM returned an end time ({result['end']}) that is not after "
+            f"the start time ({result['start']})"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -140,14 +177,29 @@ def schedule_task(
 
     1. Pulls the current schedule from Google Calendar.
     2. Sends schedule + task to the local LLM via LangChain.
-    3. Parses the LLM response as JSON and creates the event.
+    3. Validates the LLM response.
+    4. Creates the event on Google Calendar.
+
+    *duration_minutes* is used as a fallback when the user's task
+    description does not include explicit start/end times or a duration.
 
     Returns the parsed scheduling result dict.
+
+    Raises
+    ------
+    SchedulingError
+        If the LLM is unreachable, returns bad data, or the event
+        cannot be created.
     """
     # 1 ── Fetch current schedule
-    current_schedule = get_schedule(days_ahead=days_ahead)
+    try:
+        current_schedule = get_schedule(days_ahead=days_ahead)
+    except Exception as exc:
+        raise SchedulingError(
+            "Failed to fetch your calendar. Is your Google token valid?"
+        ) from exc
 
-    now = datetime.datetime.now()
+    now = datetime.datetime.now(TIMEZONE)
 
     # 2 ── Build the LangChain chain
     llm = ChatOllama(model=MODEL, temperature=0)
@@ -160,6 +212,8 @@ def schedule_task(
                 "Given the user's current calendar and a new task to schedule, "
                 "find the best available time slot.\n\n"
                 "Rules:\n"
+                "- If the user specifies exact times or a duration, use them\n"
+                "- Otherwise, default to a {duration}-minute event\n"
                 "- Schedule during reasonable hours (9:00 AM – 6:00 PM)\n"
                 "- Never overlap with existing events\n"
                 "- Prefer the earliest available slot\n"
@@ -174,7 +228,7 @@ def schedule_task(
                 "user",
                 "Current date/time: {current_time}\n\n"
                 "My schedule for the next {days_ahead} days:\n{schedule}\n\n"
-                "Please schedule this task ({duration} minutes): {task}",
+                "Please schedule this task: {task}",
             ),
         ]
     )
@@ -192,23 +246,42 @@ def schedule_task(
         schedule_text = "  (No events scheduled)"
 
     # 3 ── Run the chain
-    result = chain.invoke(
-        {
-            "current_time": now.strftime("%Y-%m-%d %H:%M:%S"),
-            "days_ahead": days_ahead,
-            "schedule": schedule_text,
-            "duration": duration_minutes,
-            "task": task_description,
-        }
-    )
+    try:
+        result = chain.invoke(
+            {
+                "current_time": now.strftime("%Y-%m-%d %H:%M:%S"),
+                "days_ahead": days_ahead,
+                "schedule": schedule_text,
+                "duration": duration_minutes,
+                "task": task_description,
+            }
+        )
+    except Exception as exc:
+        raise SchedulingError(
+            "LLM call failed. Is Ollama running with the "
+            f"'{MODEL}' model pulled?"
+        ) from exc
 
-    # 4 ── Create the event on Google Calendar
-    created_event = _create_event(
-        summary=result.get("summary", task_description),
-        start=result["start"],
-        end=result["end"],
-        description=f"Scheduled by GhostInTheMini\nReasoning: {result.get('reasoning', '')}",
-    )
+    # 4 ── Validate the LLM response
+    validate_llm_result(result)
+
+    # 5 ── Create the event on Google Calendar
+    try:
+        created_event = create_event(
+            summary=result.get("summary", task_description),
+            start=result["start"],
+            end=result["end"],
+            description=(
+                "Scheduled by GhostInTheMini\n"
+                f"Reasoning: {result.get('reasoning', '')}"
+            ),
+        )
+    except SchedulingError:
+        raise
+    except Exception as exc:
+        raise SchedulingError(
+            "Google Calendar rejected the event. Check the start/end times."
+        ) from exc
 
     print(f"✅ Event created: {result.get('summary', task_description)}")
     print(f"   Start:  {result['start']}")
