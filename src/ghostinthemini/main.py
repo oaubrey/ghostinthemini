@@ -11,10 +11,10 @@ def ghost_pulse_check():
     
     try:
         # This sends a simple message to your local Qwen 3 model
-        response = ollama.chat(model='qwen3:30b', messages=[
+        response = ollama.chat(model='qwen3-coder:30b-a3b-q4_K_M', messages=[
             {
                 'role': 'system',
-                'content': 'You are the qwen3:30b model installd and running locally on the M4 Mac Mini via Ollama.',
+                'content': 'You are the qwen3-coder:30b-a3b-q4_K_M model installed and running locally on the M4 Mac Mini via Ollama. You are a helpful assistant that is used to help schedule tasks and events for the user.',
             },
             {
                 'role': 'user',

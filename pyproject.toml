@@ -14,6 +14,11 @@ authors = [
 ]
 dependencies = [
     "ollama",
+    "langchain-core",
+    "langchain-ollama",
+    "google-api-python-client",
+    "google-auth-httplib2",
+    "google-auth-oauthlib",
 ]
 
 [project.optional-dependencies]
