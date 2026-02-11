@@ -20,6 +20,7 @@ pip install -e ".[dev]"
 ### 3. Set up Google Calendar credentials
 
 The scheduler needs OAuth credentials to access your Google Calendar.
+Credentials are stored securely in your system keyring (macOS Keychain, Windows Credential Locker, etc.) — **not** as plain-text JSON files.
 
 1. Go to the [Google Cloud Console](https://console.cloud.google.com/)
 2. Create a new project (or select an existing one)
@@ -30,11 +31,23 @@ The scheduler needs OAuth credentials to access your Google Calendar.
 5. Create **OAuth 2.0 credentials** (APIs & Services → Credentials → Create Credentials → OAuth client ID)
    - Application type: **Desktop app**
    - Add the scope: `https://www.googleapis.com/auth/calendar`
-6. Download the JSON file and save it as `credentials.json` in the project root
+6. Download the JSON file, then import it into your system keyring:
 
-> **Note:** `credentials.json` and `token.json` are gitignored and will not be committed.
+```bash
+python -m ghostinthemini.scheduler --import-credentials path/to/credentials.json
+```
 
-On first run, a browser window will open asking you to authorize access. After you approve, a `token.json` file is saved and reused automatically.
+7. **Delete the downloaded JSON file** — it's now safely stored in your keyring
+
+On first run, a browser window will open asking you to authorize access. After you approve, the OAuth token is saved to your system keyring and reused automatically.
+
+> **Migrating from an older version?** If you already have a `token.json`, import it too:
+>
+> ```bash
+> python -m ghostinthemini.scheduler --import-token token.json
+> ```
+>
+> Then delete both `credentials.json` and `token.json`.
 
 ### 4. Make sure Ollama is running
 

@@ -134,10 +134,6 @@ celerybeat.pid
 # SageMath parsed files
 *.sage.py
 
-# Google Calendar OAuth credentials
-credentials.json
-token.json
-
 # Environments
 .env
 .envrc

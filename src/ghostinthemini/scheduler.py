@@ -1,8 +1,9 @@
 """Scheduler module - uses LangChain + Ollama to manage Google Calendar."""
 
 import datetime
-import os
+import json
 
+import keyring
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -12,12 +13,13 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_ollama import ChatOllama
 
 from ghostinthemini.config import (
-    CREDENTIALS_PATH,
+    KEYRING_CREDENTIALS_KEY,
+    KEYRING_SERVICE,
+    KEYRING_TOKEN_KEY,
     MODEL,
     SCOPES,
     TIMEZONE,
     TIMEZONE_NAME,
-    TOKEN_PATH,
 )
 
 
@@ -30,38 +32,96 @@ class SchedulingError(Exception):
 
 
 # ---------------------------------------------------------------------------
+# Keyring helpers
+# ---------------------------------------------------------------------------
+
+def import_credentials(filepath: str) -> None:
+    """Read a Google OAuth client-secrets JSON file and store it in keyring.
+
+    This is a one-time migration step.  After importing, the JSON file
+    can (and should) be deleted.
+    """
+    with open(filepath) as f:
+        data = f.read()
+
+    # Validate that it's parseable JSON with expected structure
+    parsed = json.loads(data)
+    if "installed" not in parsed and "web" not in parsed:
+        raise ValueError(
+            "Invalid credentials file — expected an 'installed' or 'web' key. "
+            "Download the correct OAuth client JSON from Google Cloud Console."
+        )
+
+    keyring.set_password(KEYRING_SERVICE, KEYRING_CREDENTIALS_KEY, data)
+    print(f"✅ Client credentials stored in keyring (service={KEYRING_SERVICE!r}).")
+    print("   You can now delete the JSON file.")
+
+
+def import_token(filepath: str) -> None:
+    """Read an existing token.json file and store it in keyring.
+
+    This is a one-time migration step for users who already have a
+    token.json from a previous run.
+    """
+    with open(filepath) as f:
+        data = f.read()
+
+    # Quick sanity check
+    parsed = json.loads(data)
+    if "token" not in parsed and "refresh_token" not in parsed:
+        raise ValueError("File does not look like a Google OAuth token.")
+
+    keyring.set_password(KEYRING_SERVICE, KEYRING_TOKEN_KEY, data)
+    print(f"✅ OAuth token stored in keyring (service={KEYRING_SERVICE!r}).")
+    print("   You can now delete the JSON file.")
+
+
+# ---------------------------------------------------------------------------
 # Google Calendar helpers
 # ---------------------------------------------------------------------------
 
 def get_calendar_service():
     """Authenticate with Google and return a Calendar API service object.
 
-    On first run this opens a browser for OAuth consent.  After that,
-    the refresh token in token.json is reused automatically.
+    Credentials and tokens are stored in the system keyring instead of
+    plain-text JSON files.  On first run this opens a browser for OAuth
+    consent; after that the refresh token in keyring is reused
+    automatically.
     """
     creds = None
 
-    if os.path.exists(TOKEN_PATH):
-        creds = Credentials.from_authorized_user_file(TOKEN_PATH, SCOPES)
+    # Try to load an existing token from keyring
+    token_json = keyring.get_password(KEYRING_SERVICE, KEYRING_TOKEN_KEY)
+    if token_json:
+        token_data = json.loads(token_json)
+        creds = Credentials.from_authorized_user_info(token_data, SCOPES)
 
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
         else:
-            if not os.path.exists(CREDENTIALS_PATH):
-                raise FileNotFoundError(
-                    "credentials.json not found at project root.\n"
-                    "Download it from Google Cloud Console → APIs & Services → Credentials:\n"
-                    "https://console.cloud.google.com/apis/credentials\n"
-                    "Then place it at: " + CREDENTIALS_PATH
-                )
-            flow = InstalledAppFlow.from_client_secrets_file(
-                CREDENTIALS_PATH, SCOPES
+            # Need to run the OAuth flow — fetch client credentials from keyring
+            client_json = keyring.get_password(
+                KEYRING_SERVICE, KEYRING_CREDENTIALS_KEY
             )
+            if not client_json:
+                raise RuntimeError(
+                    "No Google OAuth client credentials found in keyring.\n"
+                    "Download the JSON from Google Cloud Console → "
+                    "APIs & Services → Credentials:\n"
+                    "  https://console.cloud.google.com/apis/credentials\n\n"
+                    "Then import it with:\n"
+                    "  python -m ghostinthemini.scheduler --import-credentials "
+                    "<path/to/credentials.json>"
+                )
+            client_config = json.loads(client_json)
+            flow = InstalledAppFlow.from_client_config(client_config, SCOPES)
             creds = flow.run_local_server(port=0)
 
-        with open(TOKEN_PATH, "w") as f:
-            f.write(creds.to_json())
+        # Persist the (possibly refreshed) token in keyring
+        keyring.set_password(
+            KEYRING_SERVICE, KEYRING_TOKEN_KEY, creds.to_json()
+        )
 
     return build("calendar", "v3", credentials=creds)
 
@@ -299,9 +359,21 @@ def schedule_task(
 if __name__ == "__main__":
     import sys
 
-    if len(sys.argv) > 1:
-        task = " ".join(sys.argv[1:])
+    if len(sys.argv) > 1 and sys.argv[1] == "--import-credentials":
+        if len(sys.argv) < 3:
+            print("Usage: python -m ghostinthemini.scheduler "
+                  "--import-credentials <path/to/credentials.json>")
+            sys.exit(1)
+        import_credentials(sys.argv[2])
+    elif len(sys.argv) > 1 and sys.argv[1] == "--import-token":
+        if len(sys.argv) < 3:
+            print("Usage: python -m ghostinthemini.scheduler "
+                  "--import-token <path/to/token.json>")
+            sys.exit(1)
+        import_token(sys.argv[2])
     else:
-        task = input("What do you want to schedule? ")
-
-    schedule_task(task)
+        if len(sys.argv) > 1:
+            task = " ".join(sys.argv[1:])
+        else:
+            task = input("What do you want to schedule? ")
+        schedule_task(task)

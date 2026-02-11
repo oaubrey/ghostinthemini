@@ -1,11 +1,17 @@
 """Tests for the scheduler module."""
 
+import json
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from ghostinthemini import scheduler
-from ghostinthemini.scheduler import SchedulingError, validate_llm_result
+from ghostinthemini.scheduler import (
+    SchedulingError,
+    import_credentials,
+    import_token,
+    validate_llm_result,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -13,32 +19,81 @@ from ghostinthemini.scheduler import SchedulingError, validate_llm_result
 # ---------------------------------------------------------------------------
 
 
-def test_get_calendar_service_missing_credentials(tmp_path):
-    """Raises FileNotFoundError when credentials.json does not exist."""
-    with (
-        patch.object(scheduler, "TOKEN_PATH", str(tmp_path / "token.json")),
-        patch.object(scheduler, "CREDENTIALS_PATH", str(tmp_path / "nope.json")),
-    ):
-        with pytest.raises(FileNotFoundError, match="credentials.json not found"):
+def test_get_calendar_service_missing_credentials():
+    """Raises RuntimeError when no client credentials exist in keyring."""
+    with patch("ghostinthemini.scheduler.keyring") as mock_keyring:
+        # No token, no credentials in keyring
+        mock_keyring.get_password.return_value = None
+        with pytest.raises(RuntimeError, match="No Google OAuth client credentials"):
             scheduler.get_calendar_service()
 
 
-def test_get_calendar_service_uses_existing_token(tmp_path):
-    """Loads credentials from token.json when it exists and is valid."""
+def test_get_calendar_service_uses_existing_token():
+    """Loads credentials from keyring when a valid token exists."""
     fake_creds = MagicMock()
     fake_creds.valid = True
 
+    fake_token_data = json.dumps({
+        "token": "ya29.fake",
+        "refresh_token": "1//fake",
+        "token_uri": "https://oauth2.googleapis.com/token",
+        "client_id": "fake.apps.googleusercontent.com",
+        "client_secret": "fake-secret",
+        "scopes": ["https://www.googleapis.com/auth/calendar"],
+    })
+
     with (
-        patch.object(scheduler, "TOKEN_PATH", str(tmp_path / "token.json")),
-        patch("os.path.exists", return_value=True),
+        patch("ghostinthemini.scheduler.keyring") as mock_keyring,
         patch(
-            "ghostinthemini.scheduler.Credentials.from_authorized_user_file",
+            "ghostinthemini.scheduler.Credentials.from_authorized_user_info",
             return_value=fake_creds,
         ),
         patch("ghostinthemini.scheduler.build") as mock_build,
     ):
+        mock_keyring.get_password.return_value = fake_token_data
         scheduler.get_calendar_service()
         mock_build.assert_called_once_with("calendar", "v3", credentials=fake_creds)
+
+
+# ---------------------------------------------------------------------------
+# import_credentials / import_token
+# ---------------------------------------------------------------------------
+
+
+def test_import_credentials_stores_in_keyring(tmp_path):
+    """import_credentials reads a JSON file and stores it in keyring."""
+    creds_file = tmp_path / "credentials.json"
+    creds_data = json.dumps({"installed": {"client_id": "test", "client_secret": "s"}})
+    creds_file.write_text(creds_data)
+
+    with patch("ghostinthemini.scheduler.keyring") as mock_keyring:
+        import_credentials(str(creds_file))
+        mock_keyring.set_password.assert_called_once_with(
+            "ghostinthemini", "google_client_credentials", creds_data
+        )
+
+
+def test_import_credentials_rejects_bad_json(tmp_path):
+    """import_credentials raises ValueError for invalid credential files."""
+    bad_file = tmp_path / "bad.json"
+    bad_file.write_text(json.dumps({"not_right": True}))
+
+    with patch("ghostinthemini.scheduler.keyring"):
+        with pytest.raises(ValueError, match="Invalid credentials file"):
+            import_credentials(str(bad_file))
+
+
+def test_import_token_stores_in_keyring(tmp_path):
+    """import_token reads a token JSON file and stores it in keyring."""
+    token_file = tmp_path / "token.json"
+    token_data = json.dumps({"token": "ya29.fake", "refresh_token": "1//fake"})
+    token_file.write_text(token_data)
+
+    with patch("ghostinthemini.scheduler.keyring") as mock_keyring:
+        import_token(str(token_file))
+        mock_keyring.set_password.assert_called_once_with(
+            "ghostinthemini", "google_oauth_token", token_data
+        )
 
 
 # ---------------------------------------------------------------------------
