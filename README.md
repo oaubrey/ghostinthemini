@@ -7,8 +7,8 @@ ahhhh! there's a ghost! and it's in my mac mini!!!
 ### 1. Create a virtual environment
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
+python3 -m venv venv
+source venv/bin/activate
 ```
 
 ### 2. Install dependencies
@@ -20,7 +20,7 @@ pip install -e ".[dev]"
 ### 3. Set up Google Calendar credentials
 
 The scheduler needs OAuth credentials to access your Google Calendar.
-Credentials are stored securely in your system keyring (macOS Keychain, Windows Credential Locker, etc.) — **not** as plain-text JSON files.
+All secrets are stored in your **system keyring** (macOS Keychain) — never as plain-text files or environment variables.
 
 1. Go to the [Google Cloud Console](https://console.cloud.google.com/)
 2. Create a new project (or select an existing one)
@@ -41,30 +41,98 @@ python -m ghostinthemini.scheduler --import-credentials path/to/credentials.json
 
 On first run, a browser window will open asking you to authorize access. After you approve, the OAuth token is saved to your system keyring and reused automatically.
 
-> **Migrating from an older version?** If you already have a `token.json`, import it too:
+> **Migrating from an older version?** If you already have `credentials.json` and `token.json` files, import them both:
 >
 > ```bash
+> python -m ghostinthemini.scheduler --import-credentials credentials.json
 > python -m ghostinthemini.scheduler --import-token token.json
 > ```
 >
-> Then delete both `credentials.json` and `token.json`.
+> Then delete both files — they're now in your keyring.
 
 ### 4. Make sure Ollama is running
 
 The ghost runs on a local Qwen model via [Ollama](https://ollama.com/). Make sure Ollama is running with the model pulled before using the scheduler.
 
+### 5. Set up Slack integration (optional)
+
+The bot connects via **Socket Mode** — no public URL or inbound ports on your Mac Mini. Only allowlisted Slack user IDs can trigger scheduling.
+
+#### Create the Slack app
+
+1. Go to [api.slack.com/apps](https://api.slack.com/apps) → **Create New App** → **From scratch**
+2. Name it whatever you like and pick your workspace
+
+#### Enable Socket Mode and generate the app-level token
+
+3. In the sidebar, go to **Socket Mode** and toggle it **on**
+4. You'll be prompted to generate an **app-level token** — give it a name (e.g. "ghostinthemini") and select the `connections:write` scope
+5. Copy the generated `xapp-…` token
+
+#### Add bot scopes
+
+6. In the sidebar, go to **OAuth & Permissions**
+7. Scroll down to **Bot Token Scopes** and click **Add an OAuth Scope** for each of:
+   - `chat:write`
+   - `app_mentions:read`
+   - `im:history`
+   - `im:read`
+
+#### Subscribe to events
+
+8. In the sidebar, go to **Event Subscriptions** and toggle it **on**
+9. Under **Subscribe to bot events**, click **Add Bot User Event** and add:
+   - `message.im` — so the bot receives your direct messages
+   - `app_mention` — so the bot responds to @-mentions in channels
+10. Click **Save Changes**
+
+#### Enable DMs on the messages tab
+
+11. In the sidebar, go to **App Home**
+12. Scroll to **Show Tabs** and check **Allow users to send Slash commands and messages from the messages tab**
+
+#### Install the app and get the bot token
+
+13. In the sidebar, go to **Install App** and click **Install to Workspace**
+14. Authorize on the consent screen
+15. Copy the **Bot User OAuth Token** (`xoxb-…`) shown after installation
+
+> **Note:** If you add new scopes or event subscriptions later, Slack will ask you to **reinstall** the app for them to take effect.
+
+#### Store tokens and allowed users in keyring
+
+```bash
+# App-level token (xapp-…) — from step 5
+python -m ghostinthemini.slack_bot --store slack_app_token xapp-YOUR-TOKEN
+
+# Bot token (xoxb-…) — from step 15
+python -m ghostinthemini.slack_bot --store slack_bot_token xoxb-YOUR-TOKEN
+
+# Your Slack user ID — open Slack, click your profile picture,
+# click Profile, click the ⋮ (three dots) menu, then "Copy member ID"
+python -m ghostinthemini.slack_bot --allow-users U01YOUR_ID
+```
+
+> **Security:** All tokens live in your system keyring (macOS Keychain) — never in files or environment variables. Only Slack user IDs in the allowlist can trigger scheduling; messages from anyone else are silently dropped.
+
 ## Run
 
 ```bash
 # Pulse check — verify the ghost is awake
-python3 -m ghostinthemini.main
+python -m ghostinthemini.main
 
-# Schedule a task via Google Calendar
-python3 -m ghostinthemini.scheduler
+# Schedule a task via the CLI
+python -m ghostinthemini.scheduler "2 hour deep work session"
 
-# Or pass the task directly
-python3 -m ghostinthemini.scheduler "2 hour deep work session"
+# Start the Slack bot (Socket Mode, runs in foreground)
+python -m ghostinthemini.slack_bot
 ```
+
+Once the Slack bot is running, DM it from your phone or desktop:
+
+> "Schedule a 30 minute standup at 10am on Friday"
+
+The ghost will check your calendar, find the best slot, and create the event.
 
 ## Test
 
