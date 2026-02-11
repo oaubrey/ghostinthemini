@@ -99,7 +99,7 @@ The bot connects via **Socket Mode** — no public URL or inbound ports on your 
 
 > **Note:** If you add new scopes or event subscriptions later, Slack will ask you to **reinstall** the app for them to take effect.
 
-#### Store tokens and allowed users in keyring
+#### Store tokens in keyring
 
 ```bash
 # App-level token (xapp-…) — from step 5
@@ -107,13 +107,35 @@ python -m ghostinthemini.slack_bot --store slack_app_token xapp-YOUR-TOKEN
 
 # Bot token (xoxb-…) — from step 15
 python -m ghostinthemini.slack_bot --store slack_bot_token xoxb-YOUR-TOKEN
-
-# Your Slack user ID — open Slack, click your profile picture,
-# click Profile, click the ⋮ (three dots) menu, then "Copy member ID"
-python -m ghostinthemini.slack_bot --allow-users U01YOUR_ID
 ```
 
-> **Security:** All tokens live in your system keyring (macOS Keychain) — never in files or environment variables. Only Slack user IDs in the allowlist can trigger scheduling; messages from anyone else are silently dropped.
+#### Add allowed users
+
+Only Slack user IDs on the allowlist can interact with the bot — messages from anyone else are silently dropped.
+
+To find your Slack user ID:
+
+1. Open Slack
+2. Click your **profile picture** (bottom-left on desktop, top-right on mobile)
+3. Click **Profile**
+4. Click the **three dots** (**...**) menu next to "Edit Profile" / "Set Status"
+5. Click **Copy member ID**
+
+Your member ID will look something like `U07AB12CDEF` — it is **not** your display name or username.
+
+Then store it:
+
+```bash
+python -m ghostinthemini.slack_bot --allow-users U07AB12CDEF
+```
+
+To allow multiple users, pass a comma-separated list:
+
+```bash
+python -m ghostinthemini.slack_bot --allow-users U07AB12CDEF,U04XY98GHIJ
+```
+
+> **Security:** All tokens and the allowlist live in your system keyring (macOS Keychain) — never in files or environment variables.
 
 ## Run
 
