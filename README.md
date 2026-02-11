@@ -1,6 +1,7 @@
 # ghostinthemini
 
 ahhhh! there's a ghost! and it's in my mac mini!!!
+this ghost helps schedule events via slack bot and google calendar integrations 
 
 ## Setup
 
